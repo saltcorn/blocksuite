@@ -421,7 +421,6 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
     const id = body.id;
     const content = body.content;
 
-    console.log(table_id, viewname, config, body);
 
     const table = await Table.findOne(table_id);
     if (!table) throw new Error("Table not found");
@@ -430,8 +429,8 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
     if (!fieldName) throw new Error("Field name not specified");
 
     const update = {};
-    update[fieldName] =
-      typeof content === "object" ? JSON.stringify(content) : content;
+    update[fieldName] = content
+      //typeof content === "object" ? JSON.stringify(content) : content;
 
     let newId = id;
     if (id) {
@@ -440,8 +439,8 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
       newId = await table.insertRow(update, req.user);
     }
 
-    req.flash("success", req.__("Saved successfully"));
-    res.redirect(`/table/${table.id}`);
+    //req.flash("success", req.__("Saved successfully"));
+    //res.redirect(`/table/${table.id}`);
   } catch (err) {
     console.error(err);
     return { json: { error: err.message }, status: 500 };
