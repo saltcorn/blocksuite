@@ -1,6 +1,6 @@
 {
   "name": "@saltcorn/blocksuite",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Block suite for Saltcorn",
   "main": "index.js",
   "dependencies": {
