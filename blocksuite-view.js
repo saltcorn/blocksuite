@@ -1,7 +1,8 @@
 const Table = require("@saltcorn/data/models/table");
 const Workflow = require("@saltcorn/data/models/workflow");
 const Form = require("@saltcorn/data/models/form");
-const { div, script, button, domReady } = require("@saltcorn/markup/tags");
+const escapeHtml = require("escape-html");
+const { div, script, button, domReady, i } = require("@saltcorn/markup/tags");
 
 // Configuration workflow: user selects the field to store the JSON
 const configuration_workflow = () =>
@@ -37,6 +38,16 @@ const configuration_workflow = () =>
                 label: "Multiple pages",
                 type: "Bool",
               },
+              {
+                name: "edgeless_switcher",
+                label: "Show edgeless switcher",
+                type: "Bool",
+              },
+              {
+                name: "autosave",
+                label: "Auto-save",
+                type: "Bool",
+              },
             ],
           });
         },
@@ -61,6 +72,8 @@ const run = async (
   const fieldName = configuration.json_field;
   const configReadOnly = !!configuration.read_only;
   const multiplePages = !!configuration.multiple_pages;
+  const edgelessSwitcher = !!configuration.edgeless_switcher;
+  const autosave = !!configuration.autosave;
 
   let row;
   try {
@@ -107,14 +120,16 @@ const run = async (
         },
         "↪"
       ),
-      button(
-        {
-          id: "btn-switch-editor",
-          class: "btn btn-outline-secondary btn-sm",
-          title: "Switch Editor Mode",
-        },
-        "⇄"
-      ),
+      edgelessSwitcher
+        ? button(
+            {
+              id: "btn-switch-editor",
+              class: "btn btn-outline-secondary btn-sm",
+              title: "Switch Editor Mode",
+            },
+            "⇄"
+          )
+        : "",
       !effectiveReadOnly && multiplePages
         ? button(
             { id: "btn-new-doc", class: "btn btn-primary btn-sm" },
@@ -124,10 +139,19 @@ const run = async (
       multiplePages
         ? div({ class: "border-start mx-2", style: "height: 20px;" }) +
             div({ id: "doc-list", class: "d-flex gap-1 flex-wrap" })
-        : ""
+        : "",
+      div({ class: "ms-auto" }) +
+        div(
+          {
+            id: "save-icon",
+            style: "display: none;",
+            title: "Saved",
+          },
+          i({ class: "fas fa-save" })
+        )
     ) +
     div({ id: "affine-editor-container", style: "height: 70vh;" }) +
-    (!effectiveReadOnly
+    (!effectiveReadOnly && (!autosave || !state?.id)
       ? button(
           { id: saveBtnId, class: "btn btn-primary mt-2", type: "button" },
           "Save"
@@ -136,7 +160,6 @@ const run = async (
     script(
       domReady(/*javascript*/ `
     (async () => {
-      console.log(window);
       const docListEl = document.getElementById('doc-list');
       const btnNewDoc = document.getElementById('btn-new-doc');
       const btnSwitchEditor = document.getElementById('btn-switch-editor');
@@ -147,6 +170,7 @@ const run = async (
 
       const readOnly = ${effectiveReadOnly ? "true" : "false"};
       const multiplePages = ${multiplePages ? "true" : "false"};
+      const autosave = ${autosave ? "true" : "false"};
 
       try {
         const bs = window.blocksuite || window.BlockSuite || window.Affine || {};
@@ -322,7 +346,6 @@ const run = async (
           }
           if (parsed && parsed.docs && Array.isArray(parsed.docs) && parsed.docs.length) {
             for (const snapshot of parsed.docs) {
-              console.log(snapshot)
               try {
                 await job.snapshotToDoc(snapshot);
               } catch (err) {
@@ -357,9 +380,23 @@ const run = async (
           };
         }
 
-        if (saveBtn && !readOnly) saveBtn.addEventListener('click', async () => {
+        const saveIconEl = document.getElementById('save-icon');
+        let saveTimeout = null;
+        let autoSaveTimeout = null;
+        let domObserver = null;
+
+        const scheduleAutoSave = () => {
+          // Avoid creating multiple new rows: only autosave once we
+          // have a currentId (i.e. after the first explicit save).
+          if (!autosave || readOnly || !currentId) return;
+          clearTimeout(autoSaveTimeout);
+          autoSaveTimeout = setTimeout(() => {
+            performSave();
+          }, 1000);
+        };
+
+        async function performSave() {
           try {
-            saveBtn.disabled = true;
             const docMetas = collection.meta.docMetas || [];
             const snapshots = [];
             for (const meta of docMetas) {
@@ -372,7 +409,6 @@ const run = async (
               docs: snapshots,
               info: job.collectionInfoToSnapshot(),
             };
-            console.log('BlockSuite snapshot:', snapshots);
 
             const saveUrl = '/view/${viewname}/save';
             const response = await fetch(saveUrl, {
@@ -399,12 +435,46 @@ const run = async (
               throw new Error(result.error || 'Save failed');
             }
 
-            if (result.id) currentId = result.id;
+            if (result.id) {
+              if (autosave && saveBtn) {
+                saveBtn.classList.add('d-none');
+              }
+            }
+
+            if (saveIconEl) {
+              saveIconEl.style.display = 'block';
+              clearTimeout(saveTimeout);
+              saveTimeout = setTimeout(() => {
+                saveIconEl.style.display = 'none';
+              }, 1000);
+            }
           } catch (error) {
             console.error('Save error:', error);
-          } finally {
-            saveBtn.disabled = false;
           }
+        }
+
+        if (autosave && !readOnly && editorContainer) {
+          editorContainer.addEventListener('input', scheduleAutoSave);
+          editorContainer.addEventListener('beforeinput', scheduleAutoSave);
+          editorContainer.addEventListener('change', scheduleAutoSave);
+
+          domObserver = new MutationObserver(() => scheduleAutoSave());
+          domObserver.observe(editorContainer, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+          });
+        }
+
+        if (autosave && !readOnly) {
+          const slotHandler = () => scheduleAutoSave();
+          collection.slots.docAdded?.subscribe(slotHandler);
+          collection.slots.docUpdated?.subscribe(slotHandler);
+        }
+
+        if (saveBtn && !readOnly) saveBtn.addEventListener('click', async () => {
+          await performSave();
+          saveBtn.disabled = false;
         });
 
       } catch (error) {
@@ -421,7 +491,6 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
     const id = body.id;
     const content = body.content;
 
-
     const table = await Table.findOne(table_id);
     if (!table) throw new Error("Table not found");
 
@@ -429,8 +498,8 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
     if (!fieldName) throw new Error("Field name not specified");
 
     const update = {};
-    update[fieldName] = content
-      //typeof content === "object" ? JSON.stringify(content) : content;
+    update[fieldName] = content;
+    //typeof content === "object" ? JSON.stringify(content) : content;
 
     let newId = id;
     if (id) {
@@ -441,6 +510,10 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
 
     //req.flash("success", req.__("Saved successfully"));
     //res.redirect(`/table/${table.id}`);
+    if (newId !== id) {
+      res.redirect(`/view/${viewname}?id=${newId}`);
+      return;
+    }
   } catch (err) {
     console.error(err);
     return { json: { error: err.message }, status: 500 };
@@ -454,4 +527,32 @@ module.exports = {
   get_state_fields,
   run,
   routes: { save },
+  functions: () => {
+    return {
+      blocksuite_json_to_html: {
+        run: (content) => {
+          if (!content) return "";
+
+          let parsed = content;
+          if (typeof parsed === "string") {
+            try {
+              parsed = JSON.parse(parsed);
+            } catch (e) {
+              return `<pre>${escapeHtml(parsed)}</pre>`;
+            }
+          }
+
+          try {
+            const pretty = JSON.stringify(parsed, null, 2);
+            return `<pre>${escapeHtml(pretty)}</pre>`;
+          } catch (e) {
+            return `<pre>${escapeHtml(String(parsed))}</pre>`;
+          }
+        },
+        isAsync: false,
+        description: "Convert a BlockSuite JSON document to escaped HTML",
+        arguments: [{ name: "content", type: "String" }],
+      },
+    };
+  },
 };
