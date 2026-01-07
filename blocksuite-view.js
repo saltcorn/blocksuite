@@ -39,9 +39,18 @@ const configuration_workflow = () =>
                 type: "Bool",
               },
               {
-                name: "edgeless_switcher",
-                label: "Show edgeless switcher",
-                type: "Bool",
+                name: "edgeless",
+                label: "Edgeless mode",
+                type: "String",
+                default: "Option (default off)",
+                attributes: {
+                  options: [
+                    "Always",
+                    "Option (default on)",
+                    "Option (default off)",
+                    "Never"
+                  ]
+                },
               },
               {
                 name: "autosave",
@@ -55,8 +64,6 @@ const configuration_workflow = () =>
     ],
   });
 
-const get_state_fields = () => [];
-
 // Run: render the editor container and client script
 const run = async (
   table_id,
@@ -65,6 +72,7 @@ const run = async (
   state,
   extraArgs = {}
 ) => {
+  console.log({ configuration });
   const { req, res } = extraArgs;
   const csrfToken = req && req.csrfToken ? req.csrfToken() : "";
   const json_field = configuration.json_field;
@@ -72,8 +80,13 @@ const run = async (
   const fieldName = configuration.json_field;
   const configReadOnly = !!configuration.read_only;
   const multiplePages = !!configuration.multiple_pages;
-  const edgelessSwitcher = !!configuration.edgeless_switcher;
+  const edgeless = configuration.edgeless || "Option (default off)";
   const autosave = !!configuration.autosave;
+  
+  // Determine if switcher button should be shown
+  const showEdgelessSwitcher = edgeless === "Option (default on)" || edgeless === "Option (default off)";
+  // Determine initial editor mode
+  const initialEditorMode = (edgeless === "Always" || edgeless === "Option (default on)") ? "edgeless" : "page";
 
   let row;
   try {
@@ -125,7 +138,7 @@ const run = async (
         },
         "↪"
       ),
-      edgelessSwitcher
+      showEdgelessSwitcher
         ? button(
             {
               id: "btn-switch-editor",
@@ -165,6 +178,7 @@ const run = async (
     script(
       domReady(/*javascript*/ `
     (async () => {
+      console.log(window)
       const docListEl = document.getElementById('doc-list');
       const btnNewDoc = document.getElementById('btn-new-doc');
       const btnSwitchEditor = document.getElementById('btn-switch-editor');
@@ -176,12 +190,15 @@ const run = async (
       const readOnly = ${effectiveReadOnly ? "true" : "false"};
       const multiplePages = ${multiplePages ? "true" : "false"};
       const autosave = ${autosave ? "true" : "false"};
+      const initialEditorMode = "${initialEditorMode}";
 
       try {
         const bs = window.blocksuite || window.BlockSuite || window.Affine || {};
         if (!bs.presets || !bs.store || !bs.blocks) {
           return;
         }
+
+        const { MarkdownAdapter, HtmlAdapter } = bs.blocks
 
         const presets = bs.presets;
         const store = bs.store;
@@ -194,18 +211,25 @@ const run = async (
         const Text = store.Text;
         const Job = store.Job;
 
+        // const htmlAdapter = new HtmlAdapter();
+        
+        // console.log({htmlAdapter})
+        
         if (!AffineEditorContainer || !DocCollection || !Schema || !Text || !Job) {
           return;
         }
-
+        
         const schema = new Schema().register(blocks.AffineSchemas);
         const collection = new DocCollection({ schema });
         collection.meta.initialize();
         const job = new Job({ collection });
+        
+        const markdownAdapter = new MarkdownAdapter(job);
+        const htmlAdapter = new HtmlAdapter(job);
 
         let activeDocId = null;
         let editor = null;
-        let currentEditorMode = 'page'; // 'page' or 'edgeless'
+        let currentEditorMode = initialEditorMode; // 'page' or 'edgeless'
         let currentId = '${state?.id || ""}';
         const html = document.documentElement;
         const userTheme = (window._sc_lightmode === 'dark') ? 'dark' : 'light';
@@ -410,6 +434,19 @@ const run = async (
               doc.load();
               snapshots.push(await job.docToSnapshot(doc));
             }
+
+            const mkResults = snapshots.map((snapshot) =>
+              markdownAdapter.fromDocSnapshot({ snapshot })
+            );
+            const markdowns = await Promise.all(mkResults);
+            console.log('Generated markdowns for docs:', markdowns);
+
+            const htmlResults = snapshots.map((snapshot) =>
+              htmlAdapter.fromDocSnapshot({ snapshot })
+            );
+            const htmls = await Promise.all(htmlResults);
+            console.log('Generated HTML for docs:', htmls);
+
             const payload = {
               docs: snapshots,
               info: job.collectionInfoToSnapshot(),
@@ -504,7 +541,7 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
     const field = table.getField(fieldName);
 
     const update = {};
-    
+
     if (field.type?.name === "JSON") update[fieldName] = content;
     else update[fieldName] = JSON.stringify(content);
     //typeof content === "object" ? JSON.stringify(content) : content;
@@ -532,35 +569,6 @@ module.exports = {
   name: "BlockSuiteDocument",
   display_state_form: false,
   configuration_workflow,
-  get_state_fields,
   run,
   routes: { save },
-  functions: () => {
-    return {
-      blocksuite_json_to_html: {
-        run: (content) => {
-          if (!content) return "";
-
-          let parsed = content;
-          if (typeof parsed === "string") {
-            try {
-              parsed = JSON.parse(parsed);
-            } catch (e) {
-              return `<pre>${escapeHtml(parsed)}</pre>`;
-            }
-          }
-
-          try {
-            const pretty = JSON.stringify(parsed, null, 2);
-            return `<pre>${escapeHtml(pretty)}</pre>`;
-          } catch (e) {
-            return `<pre>${escapeHtml(String(parsed))}</pre>`;
-          }
-        },
-        isAsync: false,
-        description: "Convert a BlockSuite JSON document to escaped HTML",
-        arguments: [{ name: "content", type: "String" }],
-      },
-    };
-  },
 };
